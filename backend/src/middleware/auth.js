@@ -1,204 +1,165 @@
-// ============================================================
-// FILE: backend/src/middleware/auth.js
-// PURPOSE: Handle JWT authentication and authorization
-// ============================================================
+/**
+ * ================================================
+ * AUTHENTICATION MIDDLEWARE
+ * ================================================
+ */
 
-// Import jsonwebtoken - creates and verifies JWT tokens
 const jwt = require('jsonwebtoken');
-
-// Import logger for logging authentication events
+const { User } = require('../models/User');
+const { AuthenticationError } = require('./errorHandler');
+const { cache } = require('../config/redis');
 const logger = require('./logger');
 
-// Import custom error class
-const { AppError } = require('../utils/errors');
-
-// ============================================================
-// MIDDLEWARE 1: VERIFY TOKEN
-// ============================================================
-
-// This middleware checks if the user has a valid JWT token
-// Used to protect routes that require authentication
-const verifyToken = (req, res, next) => {
+/**
+ * Verify JWT token and attach user to request
+ */
+const protect = async (req, res, next) => {
   try {
-    // Extract token from Authorization header
-    // Format: "Bearer <token>"
-    // Split by space and take second part [1]
-    const token = req.headers.authorization?.split(' ')[1];
+    let token;
 
-    // If no token provided, send error
-    // Token is required to access protected routes
+    // Check for token in Authorization header
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      token = req.headers.authorization.split(' ')[1];
+    }
+    // Check for token in cookies
+    else if (req.cookies?.token) {
+      token = req.cookies.token;
+    }
+
+    // Check if token exists
     if (!token) {
-      return next(new AppError('No token provided', 401));
+      throw new AuthenticationError('No token provided. Please log in.');
     }
 
-    // Verify token using JWT_SECRET from environment
-    // If token is valid, decode it and get payload
-    // If invalid, this throws an error (caught in catch block)
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    // Store decoded token data in req.user
-    // This makes user info available in route handlers
-    // Contains: id, email, role (from when token was created)
-    req.user = decoded;
-    
-    // Call next() to continue to the route handler
-    next();
-    
+    try {
+      // Verify token
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+      // Check if token is blacklisted
+      const isBlacklisted = await cache.get(`blacklist:${token}`);
+      if (isBlacklisted) {
+        throw new AuthenticationError('Token is no longer valid. Please log in again.');
+      }
+
+      // Try to get user from cache first
+      let user = await cache.get(`user:${decoded.id}`);
+
+      if (!user) {
+        // If not in cache, get from database
+        user = await User.findByPk(decoded.id, {
+          attributes: { exclude: ['password'] }
+        });
+
+        if (!user) {
+          throw new AuthenticationError('User no longer exists.');
+        }
+
+        // Cache user for 5 minutes
+        await cache.set(`user:${decoded.id}`, user, 300);
+      }
+
+      // Check if user is active
+      if (!user.isActive) {
+        throw new AuthenticationError('Your account has been deactivated.');
+      }
+
+      // Attach user to request
+      req.user = user;
+      next();
+
+    } catch (error) {
+      if (error.name === 'JsonWebTokenError') {
+        throw new AuthenticationError('Invalid token. Please log in again.');
+      }
+      if (error.name === 'TokenExpiredError') {
+        throw new AuthenticationError('Your session has expired. Please log in again.');
+      }
+      throw error;
+    }
+
   } catch (error) {
-    // Handle specific JWT errors
-    
-    // If token expired (more than 7 days old)
-    if (error.name === 'TokenExpiredError') {
-      return next(new AppError('Token expired', 401));
-    }
-    
-    // If token malformed (corrupted or invalid)
-    if (error.name === 'JsonWebTokenError') {
-      return next(new AppError('Invalid token', 401));
-    }
-    
-    // Any other authentication error
-    next(new AppError('Authentication failed', 401));
+    logger.error('Authentication error:', error);
+    next(error);
   }
 };
 
-// ============================================================
-// MIDDLEWARE 2: CHECK AUTHORIZATION (ROLE-BASED)
-// ============================================================
-
-// This middleware checks if user has required role
-// Example: Only admins can delete users
-// Takes roles as parameters: authorize('admin', 'manager')
+/**
+ * Check if user has required role
+ */
 const authorize = (...roles) => {
-  // Return middleware function
   return (req, res, next) => {
-    // Check if req.user exists (set by verifyToken)
-    // If not, user is not authenticated
     if (!req.user) {
-      return next(new AppError('User not authenticated', 401));
+      return next(new AuthenticationError('Please log in to access this resource.'));
     }
 
-    // If specific roles are required
-    // Check if user's role is in the allowed roles list
-    if (roles.length && !roles.includes(req.user.role)) {
-      // Log unauthorized access attempt
-      // Helps track security issues
-      logger.warn(`Unauthorized access attempt by user ${req.user.id}`);
-      
-      // Return 403 Forbidden error
-      // 403 = user authenticated but not authorized
-      return next(new AppError('Insufficient permissions', 403));
+    if (!roles.includes(req.user.role)) {
+      return next(
+        new AuthenticationError(
+          `User role '${req.user.role}' is not authorized to access this resource.`
+        )
+      );
     }
 
-    // If everything is OK, continue to route handler
     next();
   };
 };
 
-// ============================================================
-// MIDDLEWARE 3: CHECK TEAM MEMBERSHIP
-// ============================================================
-
-// This middleware verifies user belongs to specific team
-// Used in team-related routes
-// Example: /api/teams/team-123 - verify user is member
-const checkTeamMembership = async (req, res, next) => {
+/**
+ * Optional authentication - doesn't fail if no token
+ */
+const optionalAuth = async (req, res, next) => {
   try {
-    // Extract teamId from URL parameters
-    // Example: /api/teams/:teamId
-    const { teamId } = req.params;
-    
-    // Get userId from authenticated user
-    // Set by verifyToken middleware
-    const userId = req.user.id;
+    let token;
 
-    // TODO: Query database to verify membership
-    // Check if user is member of this team
-    // If not a member, return 403 error
-    // (Implementation in next version)
-    
-    // If user is member, continue
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      token = req.headers.authorization.split(' ')[1];
+    } else if (req.cookies?.token) {
+      token = req.cookies.token;
+    }
+
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const user = await User.findByPk(decoded.id, {
+          attributes: { exclude: ['password'] }
+        });
+        if (user && user.isActive) {
+          req.user = user;
+        }
+      } catch (error) {
+        // Token invalid, but continue without user
+        logger.debug('Optional auth failed:', error.message);
+      }
+    }
+
     next();
   } catch (error) {
-    // If any error occurs during verification
-    next(new AppError('Team verification failed', 500));
+    next(error);
   }
 };
 
-// ============================================================
-// MIDDLEWARE 4: CHECK MEETING OWNERSHIP
-// ============================================================
+/**
+ * Check if user owns the resource
+ */
+const checkOwnership = (resourceUserIdField = 'userId') => {
+  return (req, res, next) => {
+    if (!req.user) {
+      return next(new AuthenticationError('Please log in to access this resource.'));
+    }
 
-// This middleware verifies user owns or participates in meeting
-// Prevents users from accessing other user's meetings
-// Example: /api/meetings/meeting-123 - verify access
-const checkMeetingOwnership = async (req, res, next) => {
-  try {
-    // Extract meetingId from URL parameters
-    const { meetingId } = req.params;
+    const resourceUserId = req.resource?.[resourceUserIdField];
     
-    // Get userId from authenticated user
-    const userId = req.user.id;
+    if (resourceUserId && resourceUserId !== req.user.id && req.user.role !== 'admin') {
+      return next(new AuthenticationError('You do not have permission to access this resource.'));
+    }
 
-    // TODO: Query database
-    // Check if user created this meeting OR is participant
-    // If not, return 403 error
-    // (Implementation in next version)
-    
-    // If user has access, continue
     next();
-  } catch (error) {
-    // If any error occurs during verification
-    next(new AppError('Meeting verification failed', 500));
-  }
+  };
 };
-
-// ============================================================
-// EXPORT ALL MIDDLEWARE FUNCTIONS
-// ============================================================
 
 module.exports = {
-  verifyToken,              // Check JWT is valid
-  authorize,                // Check user has required role
-  checkTeamMembership,      // Check user is in team
-  checkMeetingOwnership,    // Check user can access meeting
+  protect,
+  authorize,
+  optionalAuth,
+  checkOwnership,
 };
-
-// ============================================================
-// HOW TO USE IN ROUTES:
-// ============================================================
-
-/*
-const { verifyToken, authorize, checkMeetingOwnership } = require('../middleware/auth');
-
-// Example 1: Public route (no auth needed)
-app.get('/api/public', (req, res) => {
-  res.json({ message: 'Anyone can access' });
-});
-
-// Example 2: Protected route (auth required)
-app.get('/api/profile', verifyToken, (req, res) => {
-  res.json({ user: req.user }); // Only authenticated users
-});
-
-// Example 3: Admin-only route
-app.delete('/api/users/:id', verifyToken, authorize('admin'), (req, res) => {
-  // Only admin users can delete
-  res.json({ message: 'User deleted' });
-});
-
-// Example 4: Manager or Admin route
-app.post('/api/reports', verifyToken, authorize('manager', 'admin'), (req, res) => {
-  // Only managers or admins can create reports
-});
-
-// Example 5: Meeting with ownership check
-app.get(
-  '/api/meetings/:meetingId',
-  verifyToken,
-  checkMeetingOwnership,
-  (req, res) => {
-    // User must be authenticated AND have meeting access
-  }
-);
-*/

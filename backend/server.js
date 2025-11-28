@@ -1,66 +1,49 @@
+const path = require('path');
 require('dotenv').config();
-require('express-async-errors');
-
+require('dotenv').config({
+  path: path.resolve(__dirname, '..', '.env') // Adjust if .env is not in the parent folder
+});
 const app = require('./src/app');
-const { connectPostgreSQL, connectMongoDB, syncDatabase } = require('./src/config/database');
-const { connectRedis } = require('./src/config/redis');
+const { sequelize } = require('./src/config/database');
+const { connectRedis, getRedisClient } = require('./src/config/redis');
 const logger = require('./src/middleware/logger');
+const { createServer } = require('http');
+const { initializeSocketIO } = require('./src/services/socketService');
+const PORT = process.env.PORT || 5001;
+const NODE_ENV = process.env.NODE_ENV || 'development';
 
-const PORT = process.env.PORT || 5000;
-let server;
+const server = createServer(app);
+initializeSocketIO(server);
 
-// Start server
-const startServer = async () => {
+async function startServer() {
   try {
-    // Connect to databases
-    logger.info('Connecting to databases...');
-    await connectPostgreSQL();
-    await connectMongoDB();
+    // 1️⃣ CONNECT REDIS FIRST
     await connectRedis();
+    const redisClient = getRedisClient();
+    await redisClient.ping();
+    logger.info("✅ Redis connected successfully");
 
-    // Sync database
-    logger.info('Syncing database models...');
-    await syncDatabase();
+    // 2️⃣ CONNECT DATABASES
+    await sequelize.authenticate();
+    logger.info('✅ Database connected');
 
-    // Start server
-    server = app.listen(PORT, () => {
-      logger.info(`Server started on port ${PORT}`);
-      logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    if (NODE_ENV === 'development') {
+      await sequelize.sync({ alter: true });
+      logger.info('✅ Database models synchronized');
+    }
+
+    // 3️⃣ START SERVER
+    server.listen(PORT, () => {
+      logger.info(`🚀 Server running at http://localhost:${PORT}`);
     });
+
   } catch (error) {
-    logger.error('Failed to start server:', error);
+    logger.error("❌ ERROR STARTING SERVER:", error.message);
+    console.error("Full error:", error);
     process.exit(1);
   }
-};
-
-// Handle graceful shutdown
-const gracefulShutdown = async () => {
-  logger.info('Shutting down gracefully...');
-
-  if (server) {
-    server.close(async () => {
-      logger.info('Server closed');
-      process.exit(0);
-    });
-  }
-
-  // Force exit after 10 seconds
-  setTimeout(() => {
-    logger.error('Forced shutdown');
-    process.exit(1);
-  }, 10000);
-};
-
-process.on('SIGTERM', gracefulShutdown);
-process.on('SIGINT', gracefulShutdown);
-
-process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
-process.on('uncaughtException', (error) => {
-  logger.error('Uncaught Exception:', error);
-  process.exit(1);
-});
+}
 
 startServer();
+
+module.exports = server;
