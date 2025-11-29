@@ -1,5 +1,4 @@
 const path = require('path');
-require('dotenv').config();
 require('dotenv').config({
   path: path.resolve(__dirname, '..', '.env') // Adjust if .env is not in the parent folder
 });
