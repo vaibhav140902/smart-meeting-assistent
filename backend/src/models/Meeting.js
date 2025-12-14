@@ -1,7 +1,5 @@
 const { DataTypes } = require('sequelize');
 const { sequelize } = require('../config/database');
-const User = require('./User');
-const { Team } = require('./Team');
 
 const Meeting = sequelize.define(
   'Meeting',
@@ -19,42 +17,18 @@ const Meeting = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true,
     },
-    createdBy: {
-      type: DataTypes.UUID,
-      allowNull: false,
-      references: {
-        model: 'Users',
-        key: 'id',
-      },
-    },
-    teamId: {
-      type: DataTypes.UUID,
-      allowNull: true,
-      references: {
-        model: 'Teams',
-        key: 'id',
-      },
-    },
-    startTime: {
+    scheduledAt: {
       type: DataTypes.DATE,
       allowNull: false,
     },
-    endTime: {
-      type: DataTypes.DATE,
+    duration: {
+      type: DataTypes.INTEGER, // in minutes
       allowNull: false,
-    },
-    actualEndTime: {
-      type: DataTypes.DATE,
-      allowNull: true,
+      defaultValue: 60,
     },
     status: {
-      type: DataTypes.ENUM('scheduled', 'ongoing', 'completed', 'cancelled', 'paused'),
+      type: DataTypes.ENUM('scheduled', 'in-progress', 'completed', 'cancelled'),
       defaultValue: 'scheduled',
-    },
-    googleMeetId: {
-      type: DataTypes.STRING,
-      allowNull: true,
-      unique: true,
     },
     meetingLink: {
       type: DataTypes.STRING,
@@ -64,141 +38,43 @@ const Meeting = sequelize.define(
       type: DataTypes.STRING,
       allowNull: true,
     },
-    recordingDuration: {
-      type: DataTypes.INTEGER,
-      allowNull: true, // in seconds
+    transcript: {
+      type: DataTypes.TEXT,
+      allowNull: true,
     },
-    recordingSize: {
-      type: DataTypes.BIGINT,
-      allowNull: true, // in bytes
+    summary: {
+      type: DataTypes.TEXT,
+      allowNull: true,
     },
-    isRecorded: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: false,
+    actionItems: {
+      type: DataTypes.JSON,
+      defaultValue: [],
     },
     participants: {
       type: DataTypes.JSON,
       defaultValue: [],
     },
-    participantCount: {
-      type: DataTypes.INTEGER,
-      defaultValue: 0,
+    createdBy: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      references: {
+        model: 'users',
+        key: 'id',
+      },
     },
-    agenda: {
-      type: DataTypes.TEXT,
-      allowNull: true,
-    },
-    notes: {
-      type: DataTypes.TEXT,
-      allowNull: true,
-    },
-    location: {
+    googleEventId: {
       type: DataTypes.STRING,
       allowNull: true,
     },
-    settings: {
-      type: DataTypes.JSON,
-      defaultValue: {
-        enableTranscription: true,
-        enableSummary: true,
-        enableActionItems: true,
-        enableSpeakerDiarization: true,
-        language: 'en-US',
-        isPublic: false,
-      },
-    },
-    metadata: {
-      type: DataTypes.JSON,
-      defaultValue: {},
-    },
-    deletedAt: {
-      type: DataTypes.DATE,
-      allowNull: true,
+    calendarProvider: {
+      type: DataTypes.ENUM('google', 'outlook', 'manual'),
+      defaultValue: 'manual',
     },
   },
   {
     timestamps: true,
-    paranoid: true,
+    tableName: 'meetings',
   }
 );
 
-// Meeting Participants Junction Table
-const MeetingParticipant = sequelize.define(
-  'MeetingParticipant',
-  {
-    id: {
-      type: DataTypes.UUID,
-      defaultValue: DataTypes.UUIDV4,
-      primaryKey: true,
-    },
-    meetingId: {
-      type: DataTypes.UUID,
-      allowNull: false,
-      references: {
-        model: 'Meetings',
-        key: 'id',
-      },
-    },
-    userId: {
-      type: DataTypes.UUID,
-      allowNull: false,
-      references: {
-        model: 'Users',
-        key: 'id',
-      },
-    },
-    email: {
-      type: DataTypes.STRING,
-      allowNull: true,
-    },
-    joinTime: {
-      type: DataTypes.DATE,
-      allowNull: true,
-    },
-    leftTime: {
-      type: DataTypes.DATE,
-      allowNull: true,
-    },
-    duration: {
-      type: DataTypes.INTEGER,
-      allowNull: true, // in seconds
-    },
-    role: {
-      type: DataTypes.ENUM('organizer', 'presenter', 'attendee'),
-      defaultValue: 'attendee',
-    },
-    status: {
-      type: DataTypes.ENUM('invited', 'accepted', 'declined', 'attended', 'no-show'),
-      defaultValue: 'invited',
-    },
-    speakingTime: {
-      type: DataTypes.INTEGER,
-      defaultValue: 0, // in seconds
-    },
-    metadata: {
-      type: DataTypes.JSON,
-      defaultValue: {},
-    },
-  },
-  {
-    timestamps: true,
-  }
-);
-
-// Associations
-Meeting.belongsTo(User, { as: 'creator', foreignKey: 'createdBy' });
-Meeting.belongsTo(Team, { foreignKey: 'teamId' });
-Meeting.hasMany(MeetingParticipant, { foreignKey: 'meetingId', onDelete: 'CASCADE' });
-
-User.hasMany(Meeting, { foreignKey: 'createdBy' });
-User.hasMany(MeetingParticipant, { foreignKey: 'userId' });
-
-Team.hasMany(Meeting, { foreignKey: 'teamId' });
-
-MeetingParticipant.belongsTo(Meeting, { foreignKey: 'meetingId' });
-MeetingParticipant.belongsTo(User, { foreignKey: 'userId' });
-
-module.exports = {
-  Meeting,
-  MeetingParticipant,
-};
+module.exports = Meeting;

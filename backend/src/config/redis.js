@@ -29,14 +29,13 @@ const connectRedis = async () => {
     return redisClient;
   } catch (error) {
     logger.error('Redis connection error:', error);
-    throw error;
+    // Do not throw error here, allow application to continue without cache
+    // return null; 
   }
 };
 
 const getRedisClient = () => {
-  if (!redisClient) {
-    throw new Error('Redis client not initialized. Call connectRedis first.');
-  }
+  // If redisClient is null (due to connection failure), subsequent calls will handle it.
   return redisClient;
 };
 
@@ -44,6 +43,9 @@ const getRedisClient = () => {
 const setCache = async (key, value, ttl = 3600) => {
   try {
     const client = getRedisClient();
+    if (!client) return logger.warn('Attempted to set cache, but Redis client is unavailable.');
+
+    // Note: client.setEx is the correct way to set a value with an expiration in modern 'redis' package.
     await client.setEx(key, ttl, JSON.stringify(value));
   } catch (error) {
     logger.error('Redis set cache error:', error);
@@ -53,6 +55,8 @@ const setCache = async (key, value, ttl = 3600) => {
 const getCache = async (key) => {
   try {
     const client = getRedisClient();
+    if (!client) return null;
+
     const data = await client.get(key);
     return data ? JSON.parse(data) : null;
   } catch (error) {
@@ -64,6 +68,8 @@ const getCache = async (key) => {
 const deleteCache = async (key) => {
   try {
     const client = getRedisClient();
+    if (!client) return;
+    
     await client.del(key);
   } catch (error) {
     logger.error('Redis delete cache error:', error);
@@ -73,7 +79,11 @@ const deleteCache = async (key) => {
 const flushCache = async (pattern) => {
   try {
     const client = getRedisClient();
-    const keys = await client.keys(pattern);
+    if (!client) return;
+
+    // In production, avoid running KEYS on a large dataset as it blocks the server.
+    // Use SCAN in a real-world application. For development, KEYS is usually fine.
+    const keys = await client.keys(pattern); 
     if (keys.length > 0) {
       await client.del(keys);
     }
@@ -82,11 +92,15 @@ const flushCache = async (pattern) => {
   }
 };
 
+// 💡 FIX: Export the utility functions wrapped under a 'cache' object 
+// to match the destructuring import const { cache } = require('./redis'); in authController.js
 module.exports = {
   connectRedis,
   getRedisClient,
-  setCache,
-  getCache,
-  deleteCache,
-  flushCache,
+  cache: {
+    set: setCache,
+    get: getCache,
+    del: deleteCache,
+    flush: flushCache,
+  },
 };

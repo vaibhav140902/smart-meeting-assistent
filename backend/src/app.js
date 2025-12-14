@@ -1,71 +1,64 @@
+
 /**
  * ================================================
- * EXPRESS APP CONFIGURATION
+ * APP CONFIGURATION (src/app.js)
  * ================================================
+ * This file should be created or updated
  */
 
 const express = require('express');
 const cors = require('cors');
-const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
-const mongoSanitize = require('express-mongo-sanitize');
-const xss = require('xss-clean');
-const passport = require('./config/passport');
 const session = require('express-session');
-const { globalErrorHandler } = require('./middleware/errorHandler');
+const passport = require('./config/passport');
 const logger = require('./middleware/logger');
 
+// Import routes
+const authRoutes = require('./routes/authRoutes');
+const meetingRoutes = require('./routes/meetingRoutes');
+const calendarRoutes = require('./routes/calendarRoutes');
+// Initialize Express app
 const app = express();
 
 // ============================================================
-// SECURITY MIDDLEWARE
+// MIDDLEWARE
 // ============================================================
 
-// Helmet - Set security headers
-app.use(helmet());
-
-// CORS - Cross Origin Resource Sharing
+// CORS configuration
 app.use(
   cors({
     origin: process.env.FRONTEND_URL || 'http://localhost:3000',
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
 
-// Body parser
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// Cookie parser
+// Body parsing middleware
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Sanitize data - prevent NoSQL injection
-app.use(mongoSanitize());
-
-// Prevent XSS attacks
-app.use(xss());
-
-// Session middleware (for Passport)
+// Session configuration (needed for Google OAuth flow)
 app.use(
   session({
-    secret: process.env.JWT_SECRET,
+    secret: process.env.SESSION_SECRET || 'your-secret-key-change-in-production',
     resave: false,
     saveUninitialized: false,
     cookie: {
       secure: process.env.NODE_ENV === 'production',
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      httpOnly: true,
+      maxAge: 10 * 60 * 1000, // 10 minutes (just for OAuth flow)
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
     },
   })
 );
 
-// Initialize Passport
+// Passport middleware (for Google OAuth)
 app.use(passport.initialize());
 app.use(passport.session());
 
-// ============================================================
-// REQUEST LOGGING
-// ============================================================
-
+// Request logging middleware
 app.use((req, res, next) => {
   logger.info(`${req.method} ${req.path}`);
   next();
@@ -76,30 +69,25 @@ app.use((req, res, next) => {
 // ============================================================
 
 // Health check
-app.get('/health', (req, res) => {
+app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: 'Server is running',
-    timestamp: new Date().toISOString(),
+    message: 'Smart Meeting Assistant API',
+    version: '1.0.0',
+    status: 'running',
   });
 });
 
-// API Routes
-app.use('/api/auth', require('./routes/auth'));
+// Auth routes
+app.use('/auth', authRoutes);
 
-// Google OAuth Routes
-app.get(
-  '/api/auth/google',
-  passport.authenticate('google', { scope: ['profile', 'email'] })
-);
+// Meeting routes
+app.use('/api/meetings', meetingRoutes);
 
-app.get(
-  '/api/auth/google/callback',
-  passport.authenticate('google', { session: false }),
-  require('./controllers/authController').googleCallback
-);
+// Calendar routes
+app.use('/api/calendar', calendarRoutes);
 
-// 404 Handler
+// 404 handler
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -107,10 +95,15 @@ app.use((req, res) => {
   });
 });
 
-// ============================================================
-// ERROR HANDLER
-// ============================================================
+// Global error handler
+app.use((err, req, res, next) => {
+  logger.error('Server error:', err);
 
-app.use(globalErrorHandler);
+  res.status(err.status || 500).json({
+    success: false,
+    message: err.message || 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
+  });
+});
 
 module.exports = app;

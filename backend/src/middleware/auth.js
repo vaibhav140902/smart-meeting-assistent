@@ -1,165 +1,187 @@
-/**
- * ================================================
- * AUTHENTICATION MIDDLEWARE
- * ================================================
- */
-
 const jwt = require('jsonwebtoken');
-const { User } = require('../models/User');
-const { AuthenticationError } = require('./errorHandler');
-const { cache } = require('../config/redis');
+const asyncHandler = require('express-async-handler');
+// 💡 FIX: Import models from the centralized index.js file for proper Sequelize initialization
+const db = require('../models');
+const User = db.User; 
 const logger = require('./logger');
+const { cache } = require('../config/redis');
 
 /**
- * Verify JWT token and attach user to request
+ * Protect routes - Verify JWT token (Used for required authentication)
+ * NOTE: If your routes file (e.g., meetingRoutes.js) uses 'authenticate', 
+ * you must update the import and usage there to use 'protect'.
  */
-const protect = async (req, res, next) => {
-  try {
-    let token;
+const protect = asyncHandler(async (req, res, next) => {
+  let token;
 
-    // Check for token in Authorization header
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-      token = req.headers.authorization.split(' ')[1];
-    }
-    // Check for token in cookies
-    else if (req.cookies?.token) {
-      token = req.cookies.token;
-    }
-
-    // Check if token exists
-    if (!token) {
-      throw new AuthenticationError('No token provided. Please log in.');
-    }
-
-    try {
-      // Verify token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-      // Check if token is blacklisted
-      const isBlacklisted = await cache.get(`blacklist:${token}`);
-      if (isBlacklisted) {
-        throw new AuthenticationError('Token is no longer valid. Please log in again.');
-      }
-
-      // Try to get user from cache first
-      let user = await cache.get(`user:${decoded.id}`);
-
-      if (!user) {
-        // If not in cache, get from database
-        user = await User.findByPk(decoded.id, {
-          attributes: { exclude: ['password'] }
-        });
-
-        if (!user) {
-          throw new AuthenticationError('User no longer exists.');
-        }
-
-        // Cache user for 5 minutes
-        await cache.set(`user:${decoded.id}`, user, 300);
-      }
-
-      // Check if user is active
-      if (!user.isActive) {
-        throw new AuthenticationError('Your account has been deactivated.');
-      }
-
-      // Attach user to request
-      req.user = user;
-      next();
-
-    } catch (error) {
-      if (error.name === 'JsonWebTokenError') {
-        throw new AuthenticationError('Invalid token. Please log in again.');
-      }
-      if (error.name === 'TokenExpiredError') {
-        throw new AuthenticationError('Your session has expired. Please log in again.');
-      }
-      throw error;
-    }
-
-  } catch (error) {
-    logger.error('Authentication error:', error);
-    next(error);
+  // Check for token in Authorization header or cookies
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    // Get token from Bearer header
+    token = req.headers.authorization.split(' ')[1];
+  } else if (req.cookies && req.cookies.token) {
+    // Get token from cookie
+    token = req.cookies.token;
   }
-};
+
+  // Make sure token exists
+  if (!token) {
+    logger.warn('No token provided');
+    return res.status(401).json({
+      success: false,
+      message: 'Not authorized to access this route - No token provided',
+    });
+  }
+
+  try {
+    // Check if token is blacklisted
+    if (cache && cache.get) {
+      try {
+        const blacklisted = await cache.get(`blacklist:${token}`);
+        if (blacklisted) {
+          logger.warn('Attempt to use blacklisted token');
+          return res.status(401).json({
+            success: false,
+            message: 'Token has been revoked',
+          });
+        }
+      } catch (err) {
+        logger.warn('Cache check failed:', err.message);
+      }
+    }
+
+    // Verify token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // Try to get user from cache first
+    let user = null;
+    if (cache && cache.get) {
+      try {
+        const cachedUser = await cache.get(`user:${decoded.id}`);
+        if (cachedUser) {
+          // Parse the JSON string retrieved from cache
+          user = JSON.parse(cachedUser); 
+          // Ensure that if user is loaded from cache, it still looks like a Sequelize model instance 
+          // to maintain consistency, though for simple data access, a plain object is often fine.
+          // For now, we trust the cached data has the necessary properties.
+          logger.debug(`User ${decoded.id} loaded from cache`);
+        }
+      } catch (err) {
+        logger.warn('Cache get failed:', err.message);
+      }
+    }
+
+    // If not in cache, get from database
+    // Ensure we use User from db.User which is the Sequelize model object
+    if (!user) {
+      user = await User.findByPk(decoded.id);
+      
+      if (!user) {
+        logger.warn(`User not found: ${decoded.id}`);
+        return res.status(401).json({
+          success: false,
+          message: 'User no longer exists',
+        });
+      }
+
+      // Cache user for future requests
+      if (cache && cache.set) {
+        try {
+          // Stringify the user object before caching
+          await cache.set(`user:${user.id}`, JSON.stringify(user.toJSON()), 300);
+        } catch (err) {
+          logger.warn('Cache set failed:', err.message);
+        }
+      }
+    }
+
+    // Check if user is active
+    if (!user.isActive) {
+      logger.warn(`Inactive user attempted access: ${user.email}`);
+      return res.status(403).json({
+        success: false,
+        message: 'Your account has been deactivated',
+      });
+    }
+
+    // Attach user to request
+    req.user = user;
+    next();
+  } catch (error) {
+    logger.error('Authentication error:', error.message);
+
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({
+        success: false,
+        message: 'Token has expired',
+      });
+    }
+
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token',
+      });
+    }
+
+    return res.status(401).json({
+      success: false,
+      message: 'Not authorized to access this route',
+    });
+  }
+});
 
 /**
- * Check if user has required role
+ * Authorize specific roles
  */
 const authorize = (...roles) => {
   return (req, res, next) => {
-    if (!req.user) {
-      return next(new AuthenticationError('Please log in to access this resource.'));
-    }
-
+    // Note: If user is loaded from cache (plain object), req.user.role will work.
+    // If loaded from DB, it's a Sequelize instance, and req.user.role also works.
     if (!roles.includes(req.user.role)) {
-      return next(
-        new AuthenticationError(
-          `User role '${req.user.role}' is not authorized to access this resource.`
-        )
-      );
+      logger.warn(`User ${req.user.email} attempted unauthorized access to ${req.originalUrl}`);
+      return res.status(403).json({
+        success: false,
+        message: `User role '${req.user.role}' is not authorized to access this route`,
+      });
     }
-
     next();
   };
 };
 
 /**
- * Optional authentication - doesn't fail if no token
+ * Optional authentication - doesn't block if no token
  */
-const optionalAuth = async (req, res, next) => {
-  try {
-    let token;
+const optionalAuth = asyncHandler(async (req, res, next) => {
+  let token;
 
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-      token = req.headers.authorization.split(' ')[1];
-    } else if (req.cookies?.token) {
-      token = req.cookies.token;
-    }
-
-    if (token) {
-      try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        const user = await User.findByPk(decoded.id, {
-          attributes: { exclude: ['password'] }
-        });
-        if (user && user.isActive) {
-          req.user = user;
-        }
-      } catch (error) {
-        // Token invalid, but continue without user
-        logger.debug('Optional auth failed:', error.message);
-      }
-    }
-
-    next();
-  } catch (error) {
-    next(error);
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    token = req.headers.authorization.split(' ')[1];
+  } else if (req.cookies && req.cookies.token) {
+    token = req.cookies.token;
   }
-};
 
-/**
- * Check if user owns the resource
- */
-const checkOwnership = (resourceUserIdField = 'userId') => {
-  return (req, res, next) => {
-    if (!req.user) {
-      return next(new AuthenticationError('Please log in to access this resource.'));
-    }
+  if (!token) {
+    return next();
+  }
 
-    const resourceUserId = req.resource?.[resourceUserIdField];
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    // Use the correctly imported User model
+    const user = await User.findByPk(decoded.id);
     
-    if (resourceUserId && resourceUserId !== req.user.id && req.user.role !== 'admin') {
-      return next(new AuthenticationError('You do not have permission to access this resource.'));
+    if (user && user.isActive) {
+      // Attach the user instance to the request
+      req.user = user;
     }
+  } catch (error) {
+    logger.debug('Optional auth token invalid:', error.message);
+  }
 
-    next();
-  };
-};
+  next();
+});
 
 module.exports = {
   protect,
   authorize,
   optionalAuth,
-  checkOwnership,
 };

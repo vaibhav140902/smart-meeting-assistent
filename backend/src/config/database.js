@@ -1,8 +1,9 @@
 const { Sequelize } = require('sequelize');
+const { Pool } = require('pg');
 const mongoose = require('mongoose');
 const logger = require('../middleware/logger');
 
-// PostgreSQL Connection
+// PostgreSQL Connection with Sequelize
 const sequelize = new Sequelize({
   host: process.env.DB_HOST || 'localhost',
   port: process.env.DB_PORT || 5432,
@@ -21,6 +22,19 @@ const sequelize = new Sequelize({
     timestamps: true,
     underscored: true,
   },
+});
+
+// Raw PostgreSQL pool (for non-ORM queries)
+const pool = new Pool({
+  host: process.env.DB_HOST || 'localhost',
+  port: process.env.DB_PORT || 5432,
+  user: process.env.DB_USER || 'postgres',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'smart_meeting_assistant',
+});
+
+pool.on('connect', () => {
+  console.log('✅ PostgreSQL pool connected');
 });
 
 // MongoDB Connection
@@ -70,6 +84,7 @@ const syncDatabase = async () => {
 
 module.exports = {
   sequelize,
+  pool,  // ADD THIS - for raw queries
   mongoose,
   connectMongoDB,
   connectPostgreSQL,

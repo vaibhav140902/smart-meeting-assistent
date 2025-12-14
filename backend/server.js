@@ -23,6 +23,7 @@ async function startServer() {
     logger.info("✅ Redis connected successfully");
 
     // 2️⃣ CONNECT DATABASES
+    
     await sequelize.authenticate();
     logger.info('✅ Database connected');
 
