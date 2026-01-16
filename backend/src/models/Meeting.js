@@ -76,5 +76,10 @@ const Meeting = sequelize.define(
     tableName: 'meetings',
   }
 );
-
+Meeting.associate = (models) => {
+  Meeting.belongsTo(models.User, {
+    foreignKey: 'createdBy',
+    as: 'creator'
+  });
+};
 module.exports = Meeting;

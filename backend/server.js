@@ -7,6 +7,7 @@ const { sequelize } = require('./src/config/database');
 const { connectRedis, getRedisClient } = require('./src/config/redis');
 const logger = require('./src/middleware/logger');
 const { createServer } = require('http');
+// const analyticsRoutes = require('./routes/analytics'); //Analytics route import
 const { initializeSocketIO } = require('./src/services/socketService');
 const PORT = process.env.PORT || 5001;
 const NODE_ENV = process.env.NODE_ENV || 'development';

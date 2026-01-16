@@ -12,11 +12,14 @@ const cookieParser = require('cookie-parser');
 const session = require('express-session');
 const passport = require('./config/passport');
 const logger = require('./middleware/logger');
+const analyticsRoutes = require('./routes/analyticsRoutes'); //Analytics route import
 
 // Import routes
 const authRoutes = require('./routes/authRoutes');
 const meetingRoutes = require('./routes/meetingRoutes');
 const calendarRoutes = require('./routes/calendarRoutes');
+const adminRoutes = require('./routes/admin');
+
 // Initialize Express app
 const app = express();
 
@@ -38,7 +41,7 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
-
+app.use('/api/admin', adminRoutes);
 // Session configuration (needed for Google OAuth flow)
 app.use(
   session({
@@ -53,7 +56,8 @@ app.use(
     },
   })
 );
-
+//Adding app.use for analytics routes
+//app.use('/api/analytics', analyticsRoutes);
 // Passport middleware (for Google OAuth)
 app.use(passport.initialize());
 app.use(passport.session());
